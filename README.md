@@ -23,10 +23,11 @@ A Model Context Protocol (MCP) server that helps developers discover GitHub issu
 
 1. **Clone or download this repository**:
 ```bash
-cd mcp_github_issue_shepherd
+git clone https://github.com/BrachaLeah1/mcp_server_github_issues.git
+cd mcp_server_github_issues
 ```
 
-2. **Create a virtual environment**:
+2. **Create and Activate a virtual environment**:
 ```bash
 python -m venv venv
 
@@ -60,6 +61,11 @@ To create a GitHub token:
 3. Give it a descriptive name
 4. Select scopes: `repo`, `workflow` (for automation features)
 5. Click "Generate token" and copy it
+
+## Testing via MCP Inspector
+```bash
+npx @modelcontextprotocol/inspector python src/server.py
+```
 
 ## Running the Server
 
