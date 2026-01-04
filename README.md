@@ -81,6 +81,37 @@ Or directly:
 python src/server.py
 ```
 
+## ⚙️ MCP Client Configuration
+
+This server is compatible with any **MCP-compatible code agent**.  
+Add it to your client’s MCP configuration file and restart the client.
+
+---
+
+### Example: Cursor IDE
+
+1. Press `Ctrl + Shift + P`
+2. Open **Cursor Settings**
+3. Navigate to **Tools & MCP**
+4. Add a new MCP server with the following configuration:
+
+```json
+{
+  "mcpServers": {
+    "recipes": {
+      "command": "C:/absolute/path/to/MCP_server_mealDB/venv/Scripts/python.exe",
+      "args": [
+        "C:/absolute/path/to/MCP_server_mealDB/src/server.py"
+      ],
+      "cwd": "C:/absolute/path/to/MCP_server_mealDB",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
+```
+
 ## Available Tools
 
 ### 1. search_issues
