@@ -131,7 +131,6 @@ export GITHUB_TOKEN=your_token
 ## Next Steps
 
 - Read the full [README.md](README.md) for detailed documentation
-- Check out the [examples](examples/) directory for more use cases
 - Run tests: `pytest tests/`
 
 Happy contributing! 🎉
