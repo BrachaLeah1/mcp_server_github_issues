@@ -282,6 +282,118 @@ Fork a repository to your account.
   - Required for `create_pull_request` and `fork_repo` tools
   - Get one at: https://github.com/settings/tokens
 
+## Logging
+
+The server includes structured logging to help with debugging and monitoring.
+
+### Default Behavior
+
+By default, the server logs at `INFO` level to stdout:
+
+```
+2025-01-09 14:23:45,123 - src.server - INFO - GitHub Issue Shepherd MCP Server initialized
+2025-01-09 14:23:45,124 - src.server - INFO - GitHub token configured
+2025-01-09 14:23:46,234 - src.github.client - INFO - Searching GitHub issues: python good-first-issue...
+```
+
+### Enable Debug Logging
+
+To see detailed debug information (including HTTP requests and parameter details):
+
+```bash
+# Set environment variable
+export PYTHONUNBUFFERED=1
+export DEBUG=1
+
+# Run server with debug logging
+python src/server.py
+```
+
+Or modify the server initialization in `src/server.py`:
+
+```python
+from src.utils.logging_config import setup_logging
+import logging
+
+setup_logging(log_level=logging.DEBUG)
+```
+
+### Log to File (Optional)
+
+To save logs to a file in addition to stdout:
+
+```python
+from src.utils.logging_config import setup_logging
+import logging
+
+setup_logging(
+    log_level=logging.INFO,
+    log_file="github_shepherd.log"
+)
+```
+
+**What gets logged**:
+- Server startup and configuration
+- Search queries and result counts
+- API requests and responses
+- Rate limit status and warnings
+- All errors with full context
+- Git operation execution and results
+
+## Rate Limits
+
+GitHub API has rate limits to prevent abuse:
+
+### Limits
+
+| Scenario | Limit |
+|----------|-------|
+| **Without token** | 60 requests/hour |
+| **With token** | 5,000 requests/hour |
+| **Authenticated search** | 30 requests/minute |
+
+### What Happens When Limit is Exceeded
+
+1. **Tools return standardized error response**:
+   ```json
+   {
+     "ok": false,
+     "error": {
+       "code": "GITHUB_RATE_LIMIT",
+       "message": "GitHub API rate limit exceeded",
+       "hint": "Set GITHUB_TOKEN environment variable for higher rate limits (5000/hr vs 60/hr)",
+       "details": {
+         "limit_remaining": 0,
+         "resets_at": 1673280000
+       }
+     }
+   }
+   ```
+
+2. **Server logs a warning**:
+   ```
+   WARNING - Approaching GitHub API rate limit: 6/5000 remaining
+   ERROR - Rate limit exceeded. Reset at: 1673280000
+   ```
+
+3. **Operations are paused** - retry after reset time
+
+### How to Resolve
+
+**Immediate**: Wait for the rate limit to reset (hourly for unauthenticated, 1 minute for search)
+
+**Permanent**: Set up a GitHub token
+1. Go to https://github.com/settings/tokens
+2. Generate new token (classic)
+3. Select scopes: `repo`, `workflow` (if using automation)
+4. Copy and set as environment variable:
+   ```bash
+   export GITHUB_TOKEN=ghp_your_token_here
+   ```
+5. Restart the server
+
+**Monitor**: Check server logs for rate limit warnings and adjust search patterns if needed
+
 ## Typical Workflow
 
 1. **Find an issue to work on**:

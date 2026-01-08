@@ -5,7 +5,7 @@ from typing import Dict, Any
 from ..git_ops.clone import get_git_status
 
 
-def generate_pr_checklist(
+async def generate_pr_checklist(
     local_repo_path: str,
     base_branch: str = "main",
     head_branch: str = "",
@@ -37,8 +37,8 @@ def generate_pr_checklist(
     checklist.append(f"Your branch: {head_branch}")
     checklist.append("")
     
-    # Get git status
-    git_status = get_git_status(local_repo_path)
+    # Get git status (now async)
+    git_status = await get_git_status(local_repo_path)
     
     if git_status.get("error"):
         checklist.append(f"⚠️  Warning: {git_status['error']}")

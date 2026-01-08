@@ -8,6 +8,8 @@ compatibility with AI clients like Cursor.
 """
 
 import json
+import logging
+import os
 from typing import Optional, List
 from mcp.server.fastmcp import FastMCP
 
@@ -18,16 +20,27 @@ from src.config import (
     DEFAULT_CLONE_METHOD,
     GITHUB_TOKEN
 )
+from src.utils.logging_config import setup_logging, get_logger
 from src.github.client import GitHubClient
 from src.github.query_builder import build_search_query, score_result
 from src.git_ops.fs_validate import validate_folder_for_clone
 from src.git_ops.clone import clone_repository
 from src.pr.guidance import generate_pr_checklist
 from src.pr.api import create_pull_request_automated, fork_repository_automated
-from src.utils.errors import MCPError, success_response
+from src.utils.errors import MCPError, RateLimitError, GitHubApiError, success_response, format_success_json, format_error_json
+
+# Setup logging before initializing MCP server
+setup_logging(log_level=logging.INFO)
+logger = get_logger(__name__)
 
 # Initialize MCP server
 mcp = FastMCP("github_issue_shepherd")
+
+logger.info("GitHub Issue Shepherd MCP Server initialized")
+if GITHUB_TOKEN:
+    logger.info("GitHub token configured")
+else:
+    logger.warning("No GITHUB_TOKEN set - using unauthenticated API (60 req/hour limit)")
 
 
 # ============================================================================
@@ -81,38 +94,34 @@ async def search_issues(
         JSON string containing search results
     """
     try:
+        logger.info(f"search_issues called: mode={mode}, repo={repo}")
+        
         # Validate mode
         if mode not in ["repo", "global"]:
-            return json.dumps({
-                "ok": False,
-                "error": {
-                    "code": "INVALID_INPUT",
-                    "message": "mode must be 'repo' or 'global'",
-                    "details": {}
-                }
-            }, indent=2)
+            logger.warning(f"Invalid mode: {mode}")
+            return format_error_json(
+                code="INVALID_INPUT",
+                message="mode must be 'repo' or 'global'",
+                hint="Use 'repo' for single repository search or 'global' for across GitHub"
+            )
         
         # Validate repo if mode is repo
         if mode == "repo" and not repo:
-            return json.dumps({
-                "ok": False,
-                "error": {
-                    "code": "INVALID_INPUT",
-                    "message": "repo is required when mode='repo'",
-                    "details": {}
-                }
-            }, indent=2)
+            logger.warning("repo mode selected but no repo provided")
+            return format_error_json(
+                code="INVALID_INPUT",
+                message="repo is required when mode='repo'",
+                hint="Provide repo in 'owner/repo' format"
+            )
         
         # Validate repo format
         if repo and '/' not in repo:
-            return json.dumps({
-                "ok": False,
-                "error": {
-                    "code": "INVALID_INPUT",
-                    "message": "repo must be in 'owner/repo' format",
-                    "details": {}
-                }
-            }, indent=2)
+            logger.warning(f"Invalid repo format: {repo}")
+            return format_error_json(
+                code="INVALID_INPUT",
+                message="repo must be in 'owner/repo' format",
+                hint="Example: 'facebook/react' or 'torvalds/linux'"
+            )
         
         # Clamp limit
         limit = max(1, min(limit, MAX_SEARCH_LIMIT))
@@ -129,6 +138,8 @@ async def search_issues(
             state=state
         )
         
+        logger.debug(f"Search query: {query}")
+        
         # Execute search
         client = GitHubClient()
         issues = await client.search_issues(
@@ -136,6 +147,8 @@ async def search_issues(
             sort=sort,
             limit=limit
         )
+        
+        logger.info(f"Search completed: found {len(issues)} issues")
         
         # Format results with score reasons
         query_params = {
@@ -164,11 +177,16 @@ async def search_issues(
             "total_found": len(results)
         })
         
-        return json.dumps(response, indent=2)
+        return format_success_json(response["data"])
         
+    except RateLimitError as e:
+        logger.error(f"Rate limit exceeded: {e}")
+        return e.to_json()
     except MCPError as e:
+        logger.error(f"MCP error in search_issues: {e}")
         return e.to_json()
     except Exception as e:
+        logger.error(f"Unexpected error in search_issues: {e}", exc_info=True)
         return json.dumps({
             "ok": False,
             "error": {
@@ -210,57 +228,60 @@ async def get_issue_details(
         JSON string with issue details
     """
     try:
+        logger.info(f"get_issue_details called: repo={repo}, number={number}, include_comments={include_comments}")
+        
         # Validate repo format
         if '/' not in repo:
-            return json.dumps({
-                "ok": False,
-                "error": {
-                    "code": "INVALID_INPUT",
-                    "message": "repo must be in 'owner/repo' format",
-                    "details": {}
-                }
-            }, indent=2)
+            logger.warning(f"Invalid repo format: {repo}")
+            return format_error_json(
+                code="INVALID_INPUT",
+                message="repo must be in 'owner/repo' format",
+                hint="Example: 'facebook/react' or 'torvalds/linux'"
+            )
         
         # Validate number
         if number <= 0:
-            return json.dumps({
-                "ok": False,
-                "error": {
-                    "code": "INVALID_INPUT",
-                    "message": "number must be greater than 0",
-                    "details": {}
-                }
-            }, indent=2)
+            logger.warning(f"Invalid issue number: {number}")
+            return format_error_json(
+                code="INVALID_INPUT",
+                message="number must be greater than 0",
+                hint="Issue number must be a positive integer"
+            )
         
         client = GitHubClient()
         
         # Get issue details
+        logger.debug(f"Fetching issue {repo}#{number}")
         issue = await client.get_issue(repo, number)
         result = issue.to_dict()
         
         # Get comments if requested
         if include_comments and max_comments > 0:
+            logger.debug(f"Fetching {max_comments} comments for {repo}#{number}")
             comments = await client.get_issue_comments(
                 repo,
                 number,
                 max_comments
             )
             result["comments"] = [c.to_dict() for c in comments]
+            logger.info(f"Fetched {len(comments)} comments for {repo}#{number}")
         
-        response = success_response(result)
-        return json.dumps(response, indent=2)
+        logger.info(f"Successfully retrieved issue details for {repo}#{number}")
+        return format_success_json(result)
         
+    except RateLimitError as e:
+        logger.error(f"Rate limit exceeded while fetching {repo}#{number}: {e}")
+        return e.to_json()
     except MCPError as e:
+        logger.error(f"MCP error in get_issue_details: {e}")
         return e.to_json()
     except Exception as e:
-        return json.dumps({
-            "ok": False,
-            "error": {
-                "code": "UNEXPECTED_ERROR",
-                "message": f"Unexpected error: {str(e)}",
-                "details": {}
-            }
-        }, indent=2)
+        logger.error(f"Unexpected error fetching issue {repo}#{number}: {e}", exc_info=True)
+        return format_error_json(
+            code="UNEXPECTED_ERROR",
+            message="Failed to fetch issue details",
+            context={"error": str(e)}
+        )
 
 
 @mcp.tool(
@@ -286,34 +307,37 @@ async def list_repo_metadata(repo: str) -> str:
         JSON string with repository metadata
     """
     try:
+        logger.info(f"list_repo_metadata called: repo={repo}")
+        
         # Validate repo format
         if '/' not in repo:
-            return json.dumps({
-                "ok": False,
-                "error": {
-                    "code": "INVALID_INPUT",
-                    "message": "repo must be in 'owner/repo' format",
-                    "details": {}
-                }
-            }, indent=2)
+            logger.warning(f"Invalid repo format: {repo}")
+            return format_error_json(
+                code="INVALID_INPUT",
+                message="repo must be in 'owner/repo' format",
+                hint="Example: 'facebook/react' or 'torvalds/linux'"
+            )
         
+        logger.debug(f"Fetching metadata for {repo}")
         client = GitHubClient()
         metadata = await client.get_repository(repo)
         
-        response = success_response(metadata.to_dict())
-        return json.dumps(response, indent=2)
+        logger.info(f"Successfully retrieved metadata for {repo}")
+        return format_success_json(metadata.to_dict())
         
+    except RateLimitError as e:
+        logger.error(f"Rate limit exceeded while fetching metadata for {repo}: {e}")
+        return e.to_json()
     except MCPError as e:
+        logger.error(f"MCP error in list_repo_metadata: {e}")
         return e.to_json()
     except Exception as e:
-        return json.dumps({
-            "ok": False,
-            "error": {
-                "code": "UNEXPECTED_ERROR",
-                "message": f"Unexpected error: {str(e)}",
-                "details": {}
-            }
-        }, indent=2)
+        logger.error(f"Unexpected error fetching metadata for {repo}: {e}", exc_info=True)
+        return format_error_json(
+            code="UNEXPECTED_ERROR",
+            message="Failed to fetch repository metadata",
+            context={"error": str(e)}
+        )
 
 
 @mcp.tool(
@@ -343,22 +367,32 @@ async def prepare_clone(
         JSON string with validation results
     """
     try:
+        logger.info(f"prepare_clone called: target_path={target_path}, must_be_empty={must_be_empty}")
+        
         result = validate_folder_for_clone(
             target_path,
             must_be_empty
         )
         
-        return json.dumps(result, indent=2)
+        if result.get("ok"):
+            logger.info(f"Folder validation passed: {target_path}")
+            return format_success_json(result.get("data", result))
+        else:
+            error_info = result.get("error", {})
+            logger.warning(f"Folder validation failed for {target_path}: {error_info.get('message')}")
+            return format_error_json(
+                code=error_info.get("code", "VALIDATION_ERROR"),
+                message=error_info.get("message", "Validation failed"),
+                context=error_info.get("details", {})
+            )
         
     except Exception as e:
-        return json.dumps({
-            "ok": False,
-            "error": {
-                "code": "UNEXPECTED_ERROR",
-                "message": f"Unexpected error during validation: {str(e)}",
-                "details": {}
-            }
-        }, indent=2)
+        logger.error(f"Unexpected error validating {target_path}: {e}", exc_info=True)
+        return format_error_json(
+            code="UNEXPECTED_ERROR",
+            message="Unexpected error during validation",
+            context={"error": str(e)}
+        )
 
 
 @mcp.tool(
@@ -395,28 +429,27 @@ async def clone_repo(
         JSON string with clone results
     """
     try:
+        logger.info(f"clone_repo called: repo={repo}, target_path={target_path}, clone_method={clone_method}")
+        
         # Validate repo format
         if '/' not in repo:
-            return json.dumps({
-                "ok": False,
-                "error": {
-                    "code": "INVALID_INPUT",
-                    "message": "repo must be in 'owner/repo' format",
-                    "details": {}
-                }
-            }, indent=2)
+            logger.warning(f"Invalid repo format: {repo}")
+            return format_error_json(
+                code="INVALID_INPUT",
+                message="repo must be in 'owner/repo' format",
+                hint="Example: 'facebook/react' or 'torvalds/linux'"
+            )
         
         # Validate clone method
         if clone_method not in ["https", "ssh"]:
-            return json.dumps({
-                "ok": False,
-                "error": {
-                    "code": "INVALID_INPUT",
-                    "message": "clone_method must be 'https' or 'ssh'",
-                    "details": {}
-                }
-            }, indent=2)
+            logger.warning(f"Invalid clone method: {clone_method}")
+            return format_error_json(
+                code="INVALID_INPUT",
+                message="clone_method must be 'https' or 'ssh'",
+                hint="Use 'https' for password/token auth or 'ssh' for key-based auth"
+            )
         
+        logger.debug(f"Starting clone of {repo} to {target_path}")
         result = await clone_repository(
             repo=repo,
             target_path=target_path,
@@ -425,17 +458,25 @@ async def clone_repo(
             branch=branch
         )
         
-        return json.dumps(result, indent=2)
+        if result.get("ok"):
+            logger.info(f"Successfully cloned {repo} to {target_path}")
+            return format_success_json(result.get("data", result))
+        else:
+            error_info = result.get("error", {})
+            logger.error(f"Clone failed for {repo}: {error_info.get('message')}")
+            return format_error_json(
+                code=error_info.get("code", "CLONE_FAILED"),
+                message=error_info.get("message", "Clone operation failed"),
+                context=error_info.get("details", {})
+            )
         
     except Exception as e:
-        return json.dumps({
-            "ok": False,
-            "error": {
-                "code": "UNEXPECTED_ERROR",
-                "message": f"Unexpected error during clone: {str(e)}",
-                "details": {}
-            }
-        }, indent=2)
+        logger.error(f"Unexpected error cloning {repo}: {e}", exc_info=True)
+        return format_error_json(
+            code="UNEXPECTED_ERROR",
+            message="Unexpected error during clone",
+            context={"error": str(e)}
+        )
 
 
 @mcp.tool(
@@ -474,7 +515,10 @@ async def pr_assistant(
         Markdown-formatted checklist
     """
     try:
-        checklist = generate_pr_checklist(
+        logger.info(f"pr_assistant called: local_repo_path={local_repo_path}, head_branch={head_branch}")
+        
+        logger.debug(f"Generating PR checklist for {head_branch} -> {base_branch}")
+        checklist = await generate_pr_checklist(
             local_repo_path=local_repo_path,
             base_branch=base_branch,
             head_branch=head_branch,
@@ -483,9 +527,11 @@ async def pr_assistant(
             fork_flow=fork_flow
         )
         
+        logger.info(f"Successfully generated PR checklist for {head_branch}")
         return checklist
         
     except Exception as e:
+        logger.error(f"Error generating PR guide for {head_branch}: {e}", exc_info=True)
         return f"Error generating PR guide: {str(e)}"
 
 
@@ -526,28 +572,27 @@ async def create_pull_request(
         JSON string with PR creation results
     """
     try:
+        logger.info(f"create_pull_request called: repo={repo}, head={head}, base={base}, title={title}")
+        
         # Validate repo format
         if '/' not in repo:
-            return json.dumps({
-                "ok": False,
-                "error": {
-                    "code": "INVALID_INPUT",
-                    "message": "repo must be in 'owner/repo' format",
-                    "details": {}
-                }
-            }, indent=2)
+            logger.warning(f"Invalid repo format: {repo}")
+            return format_error_json(
+                code="INVALID_INPUT",
+                message="repo must be in 'owner/repo' format",
+                hint="Example: 'facebook/react' or 'torvalds/linux'"
+            )
         
         # Validate title
         if not title or len(title.strip()) == 0:
-            return json.dumps({
-                "ok": False,
-                "error": {
-                    "code": "INVALID_INPUT",
-                    "message": "title is required and cannot be empty",
-                    "details": {}
-                }
-            }, indent=2)
+            logger.warning("Empty PR title provided")
+            return format_error_json(
+                code="INVALID_INPUT",
+                message="title is required and cannot be empty",
+                hint="Provide a clear, concise PR title (e.g., 'Fix login redirect bug')"
+            )
         
+        logger.debug(f"Creating PR: {head} -> {base}")
         result = await create_pull_request_automated(
             repo=repo,
             head=head,
@@ -558,17 +603,25 @@ async def create_pull_request(
             token=token
         )
         
-        return json.dumps(result, indent=2)
+        if result.get("ok"):
+            logger.info(f"Successfully created PR in {repo}")
+            return format_success_json(result.get("data", result))
+        else:
+            error_info = result.get("error", {})
+            logger.error(f"PR creation failed for {repo}: {error_info.get('message')}")
+            return format_error_json(
+                code=error_info.get("code", "PR_CREATION_FAILED"),
+                message=error_info.get("message", "Failed to create pull request"),
+                context=error_info.get("details", {})
+            )
         
     except Exception as e:
-        return json.dumps({
-            "ok": False,
-            "error": {
-                "code": "UNEXPECTED_ERROR",
-                "message": f"Unexpected error: {str(e)}",
-                "details": {}
-            }
-        }, indent=2)
+        logger.error(f"Unexpected error creating PR in {repo}: {e}", exc_info=True)
+        return format_error_json(
+            code="UNEXPECTED_ERROR",
+            message="Unexpected error during PR creation",
+            context={"error": str(e)}
+        )
 
 
 @mcp.tool(
@@ -598,33 +651,42 @@ async def fork_repo(
         JSON string with fork results
     """
     try:
+        logger.info(f"fork_repo called: repo={repo}")
+        
         # Validate repo format
         if '/' not in repo:
-            return json.dumps({
-                "ok": False,
-                "error": {
-                    "code": "INVALID_INPUT",
-                    "message": "repo must be in 'owner/repo' format",
-                    "details": {}
-                }
-            }, indent=2)
+            logger.warning(f"Invalid repo format: {repo}")
+            return format_error_json(
+                code="INVALID_INPUT",
+                message="repo must be in 'owner/repo' format",
+                hint="Example: 'facebook/react' or 'torvalds/linux'"
+            )
         
+        logger.debug(f"Forking {repo} to user account")
         result = await fork_repository_automated(
             repo=repo,
             token=token
         )
         
-        return json.dumps(result, indent=2)
+        if result.get("ok"):
+            logger.info(f"Successfully forked {repo}")
+            return format_success_json(result.get("data", result))
+        else:
+            error_info = result.get("error", {})
+            logger.error(f"Fork failed for {repo}: {error_info.get('message')}")
+            return format_error_json(
+                code=error_info.get("code", "FORK_FAILED"),
+                message=error_info.get("message", "Failed to fork repository"),
+                context=error_info.get("details", {})
+            )
         
     except Exception as e:
-        return json.dumps({
-            "ok": False,
-            "error": {
-                "code": "UNEXPECTED_ERROR",
-                "message": f"Unexpected error: {str(e)}",
-                "details": {}
-            }
-        }, indent=2)
+        logger.error(f"Unexpected error forking {repo}: {e}", exc_info=True)
+        return format_error_json(
+            code="UNEXPECTED_ERROR",
+            message="Unexpected error during fork",
+            context={"error": str(e)}
+        )
 
 
 # ============================================================================

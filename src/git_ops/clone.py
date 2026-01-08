@@ -2,6 +2,7 @@
 
 import subprocess
 import shutil
+import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -38,7 +39,7 @@ def get_clone_url(repo: str, method: str = "https") -> str:
         return f"https://github.com/{repo}.git"
 
 
-def get_current_branch(repo_path: Path) -> str:
+async def get_current_branch(repo_path: Path) -> str:
     """
     Get the current branch name in a git repository.
     
@@ -49,7 +50,10 @@ def get_current_branch(repo_path: Path) -> str:
         Current branch name or "unknown"
     """
     try:
-        result = subprocess.run(
+        # Use asyncio.to_thread to run blocking subprocess.run in a thread pool
+        # This allows the event loop to continue processing other requests
+        result = await asyncio.to_thread(
+            subprocess.run,
             ["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
@@ -117,8 +121,11 @@ async def clone_repository(
     cmd.extend([clone_url, target_path])
     
     try:
-        # Execute git clone
-        result = subprocess.run(
+        # Execute git clone asynchronously using asyncio.to_thread
+        # This offloads the blocking subprocess call to a thread pool,
+        # allowing the event loop to process other requests concurrently
+        result = await asyncio.to_thread(
+            subprocess.run,
             cmd,
             capture_output=True,
             text=True,
@@ -161,7 +168,7 @@ async def clone_repository(
         
         # Get the current branch
         repo_path = Path(target_path).resolve()
-        current_branch = get_current_branch(repo_path)
+        current_branch = await get_current_branch(repo_path)
         
         # Format next steps with project detection
         next_steps = format_next_steps(repo_path, repo, current_branch)
@@ -190,7 +197,7 @@ async def clone_repository(
         )
 
 
-def get_git_status(repo_path: str) -> Dict[str, Any]:
+async def get_git_status(repo_path: str) -> Dict[str, Any]:
     """
     Get git status for a repository.
     
@@ -206,8 +213,9 @@ def get_git_status(repo_path: str) -> Dict[str, Any]:
     try:
         path = Path(repo_path).resolve()
         
-        # Check if it's a git repository
-        result = subprocess.run(
+        # Check if it's a git repository (non-blocking via asyncio.to_thread)
+        result = await asyncio.to_thread(
+            subprocess.run,
             ["git", "-C", str(path), "rev-parse", "--git-dir"],
             capture_output=True,
             text=True,
@@ -218,10 +226,11 @@ def get_git_status(repo_path: str) -> Dict[str, Any]:
             return {"error": "Not a git repository"}
         
         # Get current branch
-        branch = get_current_branch(path)
+        branch = await get_current_branch(path)
         
-        # Get status
-        result = subprocess.run(
+        # Get status (non-blocking via asyncio.to_thread)
+        result = await asyncio.to_thread(
+            subprocess.run,
             ["git", "-C", str(path), "status", "--porcelain"],
             capture_output=True,
             text=True,

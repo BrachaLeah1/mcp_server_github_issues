@@ -1,13 +1,17 @@
 """GitHub API client for making HTTP requests."""
 
 import json
+import logging
 from typing import List, Dict, Any, Optional
 import httpx
 
 from ..config import GITHUB_API_BASE, get_github_headers, ErrorCode, DEFAULT_PAGE_SIZE
-from ..utils.errors import MCPError
+from ..utils.errors import MCPError, RateLimitError, GitHubApiError
 from ..utils.redact import safe_error_message
 from .models import IssueSearchResult, IssueDetail, Comment, RepositoryMetadata
+
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubClient:
@@ -22,6 +26,28 @@ class GitHubClient:
         """
         self.base_url = GITHUB_API_BASE
         self.timeout = timeout
+        logger.debug(f"GitHubClient initialized with {timeout}s timeout")
+    
+    def _extract_rate_limit_info(self, response: httpx.Response) -> Dict[str, Any]:
+        """Extract rate limit information from response headers."""
+        return {
+            "limit": response.headers.get("X-RateLimit-Limit"),
+            "remaining": response.headers.get("X-RateLimit-Remaining"),
+            "reset": response.headers.get("X-RateLimit-Reset")
+        }
+    
+    def _check_rate_limit(self, response: httpx.Response) -> None:
+        """Check and log rate limit status from response headers."""
+        rate_info = self._extract_rate_limit_info(response)
+        remaining = rate_info.get("remaining")
+        limit = rate_info.get("limit")
+        
+        if remaining and limit:
+            logger.debug(f"GitHub API rate limit: {remaining}/{limit} remaining")
+            
+            # Warn if approaching limit
+            if int(remaining) < int(limit) * 0.1:  # Less than 10% remaining
+                logger.warning(f"Approaching GitHub API rate limit: {remaining}/{limit}")
     
     async def search_issues(
         self,
@@ -41,6 +67,7 @@ class GitHubClient:
             List of IssueSearchResult objects
             
         Raises:
+            RateLimitError: If rate limit exceeded
             MCPError: If the API request fails
         """
         url = f"{self.base_url}/search/issues"
@@ -50,6 +77,8 @@ class GitHubClient:
             "per_page": min(limit, 100)  # GitHub max is 100
         }
         
+        logger.info(f"Searching GitHub issues: {query[:50]}...")
+        
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
@@ -58,33 +87,42 @@ class GitHubClient:
                     headers=get_github_headers()
                 )
                 
+                # Check and log rate limit
+                self._check_rate_limit(response)
+                
+                if response.status_code == 429:
+                    # Too Many Requests
+                    reset_at = response.headers.get("X-RateLimit-Reset")
+                    remaining = response.headers.get("X-RateLimit-Remaining", "0")
+                    logger.error(f"Rate limit hit. Reset at: {reset_at}")
+                    raise RateLimitError(reset_at=reset_at, limit_remaining=int(remaining))
+                
                 if response.status_code == 403:
                     error_data = response.json()
                     if "rate limit" in error_data.get("message", "").lower():
-                        raise MCPError(
-                            ErrorCode.GITHUB_RATE_LIMIT,
-                            "GitHub API rate limit exceeded. Please set GITHUB_TOKEN environment variable for higher limits.",
-                            {"documentation": "https://docs.github.com/en/rest/rate-limit"}
-                        )
-                    raise MCPError(
-                        ErrorCode.GITHUB_FORBIDDEN,
-                        f"Access forbidden: {error_data.get('message', 'Unknown error')}",
-                        {"status_code": 403}
+                        logger.error("Rate limit exceeded via 403 response")
+                        raise RateLimitError(limit_remaining=0)
+                    logger.error(f"Access forbidden: {error_data.get('message')}")
+                    raise GitHubApiError(
+                        error_data.get('message', 'Access forbidden'),
+                        status_code=403
                     )
                 
                 response.raise_for_status()
                 data = response.json()
                 
                 items = data.get("items", [])[:limit]
+                logger.info(f"Found {len(items)} issues")
                 return [IssueSearchResult(item) for item in items]
                 
         except httpx.HTTPStatusError as e:
-            raise MCPError(
-                ErrorCode.HTTP_ERROR,
+            logger.error(f"HTTP error during search: {e.response.status_code}")
+            raise GitHubApiError(
                 safe_error_message(e, "GitHub API request failed"),
-                {"status_code": e.response.status_code}
+                status_code=e.response.status_code
             )
         except httpx.RequestError as e:
+            logger.error(f"Network error: {safe_error_message(e, 'Network error')}")
             raise MCPError(
                 ErrorCode.HTTP_ERROR,
                 safe_error_message(e, "Network error while contacting GitHub"),
@@ -95,9 +133,9 @@ class GitHubClient:
         self,
         repo: str,
         number: int
-    ) -> IssueDetail:
+    ) -> "IssueDetail":
         """
-        Get detailed information about a specific issue.
+        Get a specific issue from a repository.
         
         Args:
             repo: Repository in "owner/repo" format
