@@ -1,7 +1,5 @@
 # GitHub Issue Shepherd - MCP Server
 
-🚀 [Quick Start](./QUICKSTART.md)
-
 A Model Context Protocol (MCP) server that helps developers discover GitHub issues to work on, clone repositories, and create pull requests with guided assistance.
 
 ## Features
