@@ -587,6 +587,6 @@ For issues or questions:
 
 ## Acknowledgments
 
-- Built with [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
+- Uses [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) for testing.
 - Uses [GitHub REST API](https://docs.github.com/en/rest)
 - Inspired by the need to make open source contribution easier
