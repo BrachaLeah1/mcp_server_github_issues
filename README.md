@@ -100,12 +100,12 @@ Add it to your client’s MCP configuration file and restart the client.
 ```json
 {
   "mcpServers": {
-    "recipes": {
-      "command": "C:/absolute/path/to/MCP_server_mealDB/venv/Scripts/python.exe",
+    "mcp_github_issues": {
+      "command": "C:/absolute/path/to/mcp_server_github_issues/venv/Scripts/python.exe",
       "args": [
-        "C:/absolute/path/to/MCP_server_mealDB/src/server.py"
+        "C:/absolute/path/to/mcp_server_github_issues/src/server.py"
       ],
-      "cwd": "C:/absolute/path/to/MCP_server_mealDB",
+      "cwd": "C:/absolute/path/to/mcp_server_github_issues",
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
