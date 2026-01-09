@@ -10,7 +10,17 @@ compatibility with AI clients like Cursor.
 import json
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import Optional, List
+
+# Add parent directory to Python path to support running directly
+# This allows: python src/server.py from the project root
+if __name__ == "__main__":
+    parent_dir = str(Path(__file__).parent.parent)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+
 from mcp.server.fastmcp import FastMCP
 
 from src.config import (
@@ -18,7 +28,8 @@ from src.config import (
     MAX_SEARCH_LIMIT,
     DEFAULT_MAX_COMMENTS,
     DEFAULT_CLONE_METHOD,
-    GITHUB_TOKEN
+    GITHUB_TOKEN,
+    get_github_headers
 )
 from src.utils.logging_config import setup_logging, get_logger
 from src.github.client import GitHubClient
@@ -48,6 +59,126 @@ else:
 # ============================================================================
 
 @mcp.tool(
+    name="discover_repository",
+    annotations={
+        "title": "Discover Popular Repositories",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True
+    }
+)
+async def discover_repository(
+    language: Optional[str] = None,
+    topics: Optional[List[str]] = None,
+    sort: str = "stars",
+    limit: int = 10
+) -> str:
+    """Discover popular, well-established GitHub repositories to contribute to.
+    
+    This tool helps beginners find repositories that are:
+    - Well-maintained (1000+ stars)
+    - Have active communities (100+ contributors)
+    - Good for new contributors
+    
+    Use this when you don't have a specific repository in mind but want to
+    find quality projects matching your interests.
+    
+    Args:
+        language: Programming language filter (e.g., 'python', 'javascript')
+        topics: Project topics (e.g., ['machine-learning', 'data-science'])
+        sort: 'stars', 'forks', 'updated' (default: 'stars')
+        limit: Maximum repositories to return (1-30, default: 10)
+    
+    Returns:
+        JSON string with list of popular repositories
+    """
+    try:
+        # Build search query for popular repos
+        # stars:>1000 ensures repos with 100+ contributors (strong correlation)
+        # archived:false filters out abandoned/inactive projects
+        query_parts = ["stars:>1000", "is:public", "archived:false"]
+        
+        if language:
+            query_parts.append(f"language:{language}")
+        
+        if topics:
+            for topic in topics:
+                query_parts.append(f"topic:{topic}")
+        
+        # Sort by stars by default to show most popular first
+        sort_param = sort if sort in ["stars", "forks", "updated"] else "stars"
+        
+        query = " ".join(query_parts)
+        
+        logger.info(f"discover_repository called: language={language}, topics={topics}")
+        logger.debug(f"Discovery query: {query}")
+        
+        # Search for popular repositories
+        client = GitHubClient()
+        
+        # Use a custom search to get repos instead of issues
+        url = f"{client.base_url}/search/repositories"
+        params = {
+            "q": query,
+            "sort": sort_param,
+            "order": "desc",
+            "per_page": min(limit, 30)
+        }
+        
+        logger.debug(f"Fetching popular repositories with sort={sort_param}")
+        
+        import httpx
+        async with httpx.AsyncClient(timeout=client.timeout) as http_client:
+            response = await http_client.get(
+                url,
+                params=params,
+                headers=get_github_headers()
+            )
+            response.raise_for_status()
+            data = response.json()
+        
+        repos = []
+        for item in data.get("items", [])[:limit]:
+            repos.append({
+                "name": item.get("full_name", ""),
+                "url": item.get("html_url", ""),
+                "description": item.get("description", ""),
+                "stars": item.get("stargazers_count", 0),
+                "language": item.get("language", "N/A"),
+                "topics": item.get("topics", []),
+                "updated_at": item.get("updated_at", ""),
+                "open_issues": item.get("open_issues_count", 0)
+            })
+        
+        logger.info(f"Found {len(repos)} popular repositories matching criteria")
+        
+        return json.dumps({
+            "ok": True,
+            "data": {
+                "repositories": repos,
+                "count": len(repos),
+                "criteria": {
+                    "min_stars": 1000,
+                    "language": language,
+                    "topics": topics,
+                    "note": "These repositories have 1000+ stars, indicating 100+ contributors and active maintenance"
+                }
+            }
+        }, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Error discovering repositories: {e}", exc_info=True)
+        return json.dumps({
+            "ok": False,
+            "error": {
+                "code": "DISCOVERY_ERROR",
+                "message": f"Failed to discover repositories: {str(e)}",
+                "details": {}
+            }
+        }, indent=2)
+
+@mcp.tool(
     name="search_issues",
     annotations={
         "title": "Search GitHub Issues",
@@ -58,8 +189,7 @@ else:
     }
 )
 async def search_issues(
-    mode: str,
-    repo: Optional[str] = None,
+    repo: str,
     skills: Optional[List[str]] = None,
     topics: Optional[List[str]] = None,
     language: Optional[str] = None,
@@ -69,18 +199,17 @@ async def search_issues(
     sort: str = "relevance",
     limit: int = DEFAULT_SEARCH_LIMIT
 ) -> str:
-    """Search for GitHub issues either in a specific repository or across GitHub.
+    """Search for GitHub issues in a specific repository.
     
-    This tool helps developers discover issues to work on by searching based on:
-    - Repository (for focused search)
-    - Skills and topics (for broader discovery)
+    This tool helps developers discover issues to work on within a repository by searching based on:
+    - Repository (required - use discover_repository tool to find repos first)
+    - Skills and topics
     - Programming language preferences
     - Difficulty level (good-first-issue, easy, medium, hard)
     - Custom labels and state filters
     
     Args:
-        mode: 'repo' or 'global'
-        repo: Repository name in 'owner/repo' format (required if mode='repo')
+        repo: Repository name in 'owner/repo' format (required)
         skills: Skills like ['python', 'testing']
         topics: Topics like ['machine-learning']
         language: Programming language filter
@@ -94,41 +223,23 @@ async def search_issues(
         JSON string containing search results
     """
     try:
-        logger.info(f"search_issues called: mode={mode}, repo={repo}")
-        
-        # Validate mode
-        if mode not in ["repo", "global"]:
-            logger.warning(f"Invalid mode: {mode}")
-            return format_error_json(
-                code="INVALID_INPUT",
-                message="mode must be 'repo' or 'global'",
-                hint="Use 'repo' for single repository search or 'global' for across GitHub"
-            )
-        
-        # Validate repo if mode is repo
-        if mode == "repo" and not repo:
-            logger.warning("repo mode selected but no repo provided")
-            return format_error_json(
-                code="INVALID_INPUT",
-                message="repo is required when mode='repo'",
-                hint="Provide repo in 'owner/repo' format"
-            )
+        logger.info(f"search_issues called: repo={repo}")
         
         # Validate repo format
-        if repo and '/' not in repo:
+        if not repo or '/' not in repo:
             logger.warning(f"Invalid repo format: {repo}")
             return format_error_json(
                 code="INVALID_INPUT",
                 message="repo must be in 'owner/repo' format",
-                hint="Example: 'facebook/react' or 'torvalds/linux'"
+                hint="Example: 'facebook/react' or 'torvalds/linux'. Use discover_repository to find repos."
             )
         
         # Clamp limit
         limit = max(1, min(limit, MAX_SEARCH_LIMIT))
         
-        # Build search query
+        # Build search query (repo mode only now)
         query = build_search_query(
-            mode=mode,
+            mode="repo",
             repo=repo,
             skills=skills,
             topics=topics,
@@ -152,7 +263,6 @@ async def search_issues(
         
         # Format results with score reasons
         query_params = {
-            "mode": mode,
             "repo": repo,
             "skills": skills,
             "topics": topics,
@@ -298,13 +408,17 @@ async def list_repo_metadata(repo: str) -> str:
     """Get metadata and information about a GitHub repository.
     
     Provides helpful context before cloning or working with a repository,
-    including default branch, language, license, statistics, and clone URLs.
+    including default branch, language, license, statistics, clone URLs,
+    and pointers to contribution guidelines (CONTRIBUTING.md, CODE_OF_CONDUCT.md, etc).
+    
+    This helps developers understand the repository's requirements and community
+    standards BEFORE making changes.
     
     Args:
         repo: Repository in 'owner/repo' format
     
     Returns:
-        JSON string with repository metadata
+        JSON string with repository metadata and contribution guide pointers
     """
     try:
         logger.info(f"list_repo_metadata called: repo={repo}")
@@ -322,8 +436,26 @@ async def list_repo_metadata(repo: str) -> str:
         client = GitHubClient()
         metadata = await client.get_repository(repo)
         
+        # Enhance metadata with contribution guide information
+        metadata_dict = metadata.to_dict()
+        
+        # Add pointers to common documentation files that help contributors
+        owner, repo_name = repo.split('/')
+        contribution_guides = {
+            "CONTRIBUTING.md": f"https://github.com/{repo}/blob/{metadata_dict.get('default_branch', 'main')}/CONTRIBUTING.md",
+            "CODE_OF_CONDUCT.md": f"https://github.com/{repo}/blob/{metadata_dict.get('default_branch', 'main')}/CODE_OF_CONDUCT.md",
+            "DEVELOPMENT.md": f"https://github.com/{repo}/blob/{metadata_dict.get('default_branch', 'main')}/DEVELOPMENT.md",
+            "DEVELOPERS.md": f"https://github.com/{repo}/blob/{metadata_dict.get('default_branch', 'main')}/DEVELOPERS.md",
+            ".github/CONTRIBUTING.md": f"https://github.com/{repo}/blob/{metadata_dict.get('default_branch', 'main')}/.github/CONTRIBUTING.md",
+        }
+        
+        metadata_dict["contribution_guides"] = {
+            "message": "Review these files to understand how to contribute to this project",
+            "common_files": contribution_guides
+        }
+        
         logger.info(f"Successfully retrieved metadata for {repo}")
-        return format_success_json(metadata.to_dict())
+        return format_success_json(metadata_dict)
         
     except RateLimitError as e:
         logger.error(f"Rate limit exceeded while fetching metadata for {repo}: {e}")
@@ -400,7 +532,7 @@ async def prepare_clone(
     annotations={
         "title": "Clone Repository",
         "readOnlyHint": False,
-        "destructiveHint": False,
+        "destructiveHint": True,
         "idempotentHint": False,
         "openWorldHint": False
     }
@@ -408,28 +540,51 @@ async def prepare_clone(
 async def clone_repo(
     repo: str,
     target_path: str,
+    confirmed: bool = False,
     clone_method: str = DEFAULT_CLONE_METHOD,
     shallow: bool = False,
     branch: Optional[str] = None
 ) -> str:
-    """Clone a GitHub repository to a local directory.
+    """Clone a GitHub repository to a local directory - USER CONFIRMATION REQUIRED.
     
-    Clones the specified repository using git. The target folder should
-    be validated first using prepare_clone. After successful clone,
-    provides next steps and setup hints based on detected project type.
+    IMPORTANT: User must explicitly confirm before cloning.
+    
+    Workflow:
+    1. Present user with two options:
+       - Option A: "Clone to a specific path you provide"
+       - Option B: "Clone to current workspace"
+    2. Get their choice and confirmation: "Do you want to proceed? (yes/no)"
+    3. Only if user confirms, call clone_repo with confirmed=true
+    
+    The target folder should be validated first using prepare_clone.
+    After successful clone, provides next steps and setup hints based on 
+    detected project type.
     
     Args:
         repo: Repository in 'owner/repo' format
-        target_path: Local path to clone into
+        target_path: Local path to clone into (must be provided by user - never assume)
+        confirmed: User MUST explicitly set to true to proceed (security checkpoint)
         clone_method: 'https' or 'ssh' (default: 'https')
         shallow: Whether to do shallow clone (default: false)
         branch: Specific branch to checkout
     
     Returns:
-        JSON string with clone results
+        JSON string with clone results or confirmation error
     """
     try:
-        logger.info(f"clone_repo called: repo={repo}, target_path={target_path}, clone_method={clone_method}")
+        # Check confirmation first - this is required before proceeding
+        if not confirmed:
+            logger.warning(f"clone_repo called without explicit user confirmation")
+            return format_error_json(
+                code="CONFIRMATION_REQUIRED",
+                message="Clone operation requires explicit user confirmation",
+                context={
+                    "confirmed": False,
+                    "instructions": "Present user two options: A) Specific path, B) Current workspace. Get their choice and confirmation, then set confirmed=true"
+                }
+            )
+        
+        logger.info(f"clone_repo called: repo={repo}, target_path={target_path}, confirmed={confirmed}, clone_method={clone_method}")
         
         # Validate repo format
         if '/' not in repo:
@@ -503,6 +658,10 @@ async def pr_assistant(
     credentials. Includes commands for testing, pushing, and opening a PR
     via web interface or GitHub CLI.
     
+    IMPORTANT: This guidance will emphasize the importance of reviewing the
+    repository's contribution guidelines (CONTRIBUTING.md, CODE_OF_CONDUCT.md, etc)
+    to ensure your PR meets the project's standards and expectations.
+    
     Args:
         local_repo_path: Path to local repository
         base_branch: Base branch to merge into (default: 'main')
@@ -512,7 +671,7 @@ async def pr_assistant(
         fork_flow: Whether using fork workflow (default: true)
     
     Returns:
-        Markdown-formatted checklist
+        Markdown-formatted checklist with contribution guidelines emphasized
     """
     try:
         logger.info(f"pr_assistant called: local_repo_path={local_repo_path}, head_branch={head_branch}")

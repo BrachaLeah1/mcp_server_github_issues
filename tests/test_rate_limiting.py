@@ -122,8 +122,8 @@ class TestToolRateLimitResponses:
             # Mock rate limit error from client
             mock_search.side_effect = RateLimitError(reset_at="1673280000", limit_remaining=0)
             
-            # Call tool
-            result = await search_issues(mode="global")
+            # Call tool with required repo parameter
+            result = await search_issues(repo="test/repo")
             
             # Parse JSON response
             result_dict = json.loads(result)
@@ -172,8 +172,8 @@ class TestToolRateLimitResponses:
             create_pull_request
         )
         
-        # Test search_issues with invalid mode
-        result = await search_issues(mode="invalid")
+        # Test search_issues with invalid repo format
+        result = await search_issues(repo="invalid")
         assert isinstance(json.loads(result), dict)
         
         # Test get_issue_details with invalid repo

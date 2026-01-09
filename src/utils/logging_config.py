@@ -1,7 +1,6 @@
 """Logging configuration for the MCP server."""
 
 import logging
-import sys
 from typing import Optional
 
 
@@ -15,9 +14,12 @@ def setup_logging(log_level: Optional[int] = None, log_file: Optional[str] = Non
     """
     Configure logging for the MCP server.
     
+    Logs are written to a file or suppressed entirely to avoid interfering
+    with MCP protocol communication on stdout/stderr.
+    
     Args:
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        log_file: Optional file path to write logs to
+        log_file: Optional file path to write logs to. If not provided, logs are suppressed.
     """
     if log_level is None:
         log_level = DEFAULT_LOG_LEVEL
@@ -35,11 +37,10 @@ def setup_logging(log_level: Optional[int] = None, log_file: Optional[str] = Non
     # Remove any existing handlers
     root_logger.handlers.clear()
     
-    # Add console handler (stdout)
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
+    # Add NullHandler by default (no output to stderr or stdout)
+    # This prevents any interference with MCP protocol
+    null_handler = logging.NullHandler()
+    root_logger.addHandler(null_handler)
     
     # Add file handler if specified
     if log_file:
@@ -48,12 +49,12 @@ def setup_logging(log_level: Optional[int] = None, log_file: Optional[str] = Non
             file_handler.setLevel(log_level)
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
-        except Exception as e:
-            root_logger.warning(f"Failed to create log file '{log_file}': {e}")
+        except Exception:
+            pass  # Silently fail - don't output errors to stderr
     
-    # Set specific loggers
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # Reduce noise from httpx
-    logging.getLogger("asyncio").setLevel(logging.WARNING)  # Reduce noise from asyncio
+    # Set specific loggers to WARNING to minimize noise
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:

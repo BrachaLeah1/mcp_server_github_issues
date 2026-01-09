@@ -155,14 +155,35 @@ async def generate_pr_checklist(
     checklist.append("```")
     checklist.append("")
     
+    # Important: Review contribution guidelines
+    checklist.append("## ⚠️ IMPORTANT: Review Contribution Guidelines")
+    checklist.append("")
+    checklist.append("**Before creating your PR, check the repository's contribution guidelines:**")
+    checklist.append("")
+    checklist.append("1. Look for these files in the repository:")
+    checklist.append("   - **CONTRIBUTING.md** - Contribution process and standards")
+    checklist.append("   - **CODE_OF_CONDUCT.md** - Community standards and behavior")
+    checklist.append("   - **DEVELOPMENT.md** - Setup and development instructions")
+    checklist.append("   - **.github/CONTRIBUTING.md** - GitHub-specific contribution guide")
+    checklist.append("")
+    checklist.append("2. These files explain:")
+    checklist.append("   - How to format code and commit messages")
+    checklist.append("   - Testing requirements")
+    checklist.append("   - Documentation standards")
+    checklist.append("   - PR review process")
+    checklist.append("   - Code of conduct expectations")
+    checklist.append("")
+    checklist.append("3. Follow the guidelines exactly - reviewers will check for compliance")
+    checklist.append("")
+    
     # Additional tips
     checklist.append("## Additional Tips")
     checklist.append("")
     checklist.append("- **Link to the issue**: Mention 'Fixes #123' or 'Closes #123' in your PR description")
-    checklist.append("- **Follow contribution guidelines**: Check if the repository has a CONTRIBUTING.md file")
     checklist.append("- **Keep PRs focused**: One PR should address one issue or feature")
     checklist.append("- **Write clear commit messages**: Use present tense, be descriptive")
     checklist.append("- **Update documentation**: If you changed functionality, update relevant docs")
+    checklist.append("- **Use the contribution guide**: Reference CONTRIBUTING.md for specific requirements")
     checklist.append("")
     
     # Troubleshooting

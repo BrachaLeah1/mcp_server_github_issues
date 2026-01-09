@@ -116,13 +116,50 @@ Add it to your client’s MCP configuration file and restart the client.
 
 ## Available Tools
 
-### 1. search_issues
+### 1. discover_repository
 
-Search for GitHub issues to work on.
+Discover popular, well-established GitHub repositories to contribute to. Use this when you don't have a specific repository in mind but want to find quality projects matching your interests.
+
+**Filters repositories by**:
+- **Minimum 1000 stars** (strong indicator of 100+ contributors and active maintenance)
+- **Active projects only** (excludes archived/abandoned repositories)
+- **Public repositories**
 
 **Parameters**:
-- `mode`: "repo" (search in specific repository) or "global" (search across GitHub)
-- `repo`: Repository name in "owner/repo" format (required if mode="repo")
+- `language`: Programming language filter (e.g., "python", "javascript", "rust")
+- `topics`: List of project topics (e.g., ["machine-learning", "data-science"])
+- `sort`: Sort order - "stars" (default), "forks", or "updated"
+- `limit`: Maximum repositories to return (1-30, default: 10)
+
+**Returns**: List of repositories with:
+- Name, URL, description
+- Star count and language
+- Topics, last update time
+- Open issues count
+
+**Example**:
+```json
+{
+  "language": "python",
+  "topics": ["machine-learning"],
+  "sort": "stars",
+  "limit": 5
+}
+```
+
+**Use Cases**:
+- "I want to contribute to a Python project but don't know which one"
+- "Show me popular JavaScript web frameworks to learn from"
+- "Find active data science projects to contribute to"
+
+---
+
+### 2. search_issues
+
+Search for GitHub issues in a specific repository. Use after discovering a repository with `discover_repository`.
+
+**Parameters**:
+- `repo`: Repository name in "owner/repo" format (required)
 - `skills`: List of skills/keywords (e.g., ["python", "testing", "documentation"])
 - `topics`: List of topics (e.g., ["machine-learning", "web-development"])
 - `language`: Programming language filter
@@ -135,14 +172,13 @@ Search for GitHub issues to work on.
 **Example**:
 ```json
 {
-  "mode": "repo",
   "repo": "openvinotoolkit/openvino",
   "difficulty": "good-first-issue",
   "limit": 10
 }
 ```
 
-### 2. get_issue_details
+### 3. get_issue_details
 
 Get detailed information about a specific issue.
 
@@ -162,9 +198,26 @@ Get detailed information about a specific issue.
 }
 ```
 
-### 3. list_repo_metadata
+### 4. list_repo_metadata
 
-Get repository metadata and information.
+Get comprehensive repository metadata and contribution guide pointers.
+
+This tool provides helpful context **before working with a repository**, including:
+- Repository statistics (stars, forks, watchers)
+- Default branch and primary language
+- License information
+- Clone URLs for HTTPS and SSH
+- **Pointers to contribution guidelines** (CONTRIBUTING.md, CODE_OF_CONDUCT.md, DEVELOPMENT.md, etc.)
+
+**Key Feature: Contribution Guidance Pointers**:
+The response includes a `contribution_guides` section that lists common documentation files to review:
+- **CONTRIBUTING.md** - How to contribute and PR process
+- **CODE_OF_CONDUCT.md** - Community standards and expectations
+- **DEVELOPMENT.md** - Setup and development information
+- **DEVELOPERS.md** - Alternative development guide
+- **.github/CONTRIBUTING.md** - GitHub-specific guide
+
+This helps developers understand the project's standards **before making changes**.
 
 **Parameters**:
 - `repo`: Repository in "owner/repo" format
@@ -176,7 +229,26 @@ Get repository metadata and information.
 }
 ```
 
-### 4. prepare_clone
+**Response Includes**:
+```json
+{
+  "success": true,
+  "repo_name": "vscode",
+  "owner": "microsoft",
+  "stars": 156000,
+  "language": "TypeScript",
+  "contribution_guides": {
+    "message": "Review these files to understand how to contribute to this project",
+    "common_files": {
+      "CONTRIBUTING.md": "https://github.com/microsoft/vscode/blob/main/CONTRIBUTING.md",
+      "CODE_OF_CONDUCT.md": "https://github.com/microsoft/vscode/blob/main/CODE_OF_CONDUCT.md",
+      "DEVELOPMENT.md": "https://github.com/microsoft/vscode/blob/main/DEVELOPMENT.md"
+    }
+  }
+}
+```
+
+### 5. prepare_clone
 
 Validate a folder path before cloning.
 
@@ -192,30 +264,65 @@ Validate a folder path before cloning.
 }
 ```
 
-### 5. clone_repo
+### 6. clone_repo
 
-Clone a repository to a local directory.
+Clone a repository to a local directory - **USER CONFIRMATION REQUIRED**.
+
+⚠️ **CRITICAL**: User must explicitly confirm before cloning. Do NOT assume a path.
 
 **Parameters**:
 - `repo`: Repository in "owner/repo" format
-- `target_path`: Local path to clone into
+- `target_path`: Local path to clone into (user must specify this)
+- `confirmed`: Must be `true` to proceed (default: `false`) - **REQUIRED SECURITY CHECKPOINT**
 - `clone_method`: "https" or "ssh" (default: "https")
 - `shallow`: Whether to do shallow clone (default: false)
 - `branch`: Specific branch to checkout (optional)
 
-**Example**:
+**Required Workflow**:
+1. Present user with two options:
+   - **Option A**: Clone to a specific path they provide
+   - **Option B**: Clone to current workspace
+2. Get explicit user confirmation: "Do you want to proceed? (yes/no)"
+3. Only if user confirms, call `clone_repo` with `confirmed=true`
+
+**Example - After User Confirms**:
 ```json
 {
   "repo": "torvalds/linux",
   "target_path": "/home/user/projects/linux",
+  "confirmed": true,
   "clone_method": "https",
   "shallow": true
 }
 ```
 
-### 6. pr_assistant
+**Without Confirmation (will return error)**:
+```json
+{
+  "repo": "torvalds/linux",
+  "target_path": "/home/user/projects/linux",
+  "confirmed": false
+}
+```
+Returns error: `CONFIRMATION_REQUIRED`
 
-Get step-by-step guidance for creating a pull request.
+### 7. pr_assistant
+
+Get step-by-step guidance for creating a pull request, with emphasis on reviewing the repository's **contribution guidelines**.
+
+**Key Features**:
+- Step-by-step instructions for creating a PR
+- Git commands for testing, committing, and pushing changes
+- Guidance on using GitHub web interface or CLI
+- **IMPORTANT**: Directs you to review CONTRIBUTING.md, CODE_OF_CONDUCT.md, and other contribution guidelines
+- Troubleshooting tips for common issues
+
+**Why Contribution Guidelines Matter**:
+The guidance **emphasizes checking the repository's contribution guidelines** (CONTRIBUTING.md, CODE_OF_CONDUCT.md, DEVELOPMENT.md) because:
+- Different projects have different requirements for code format, testing, and documentation
+- Following guidelines ensures your PR will be accepted on the first review
+- Some projects require specific commit message formats or branch naming conventions
+- Code of conduct compliance is essential for maintainers
 
 **Parameters**:
 - `local_repo_path`: Path to local repository
@@ -237,7 +344,25 @@ Get step-by-step guidance for creating a pull request.
 }
 ```
 
-### 7. create_pull_request (Optional - Requires Token)
+**Sample Output Includes**:
+```
+## ⚠️ IMPORTANT: Review Contribution Guidelines
+
+Before creating your PR, check the repository's contribution guidelines:
+
+1. Look for these files in the repository:
+   - **CONTRIBUTING.md** - Contribution process and standards
+   - **CODE_OF_CONDUCT.md** - Community standards and behavior
+   - **DEVELOPMENT.md** - Setup and development instructions
+   
+2. These files explain:
+   - How to format code and commit messages
+   - Testing requirements
+   - Documentation standards
+   - PR review process
+```
+
+### 8. create_pull_request (Optional - Requires Token)
 
 Automatically create a pull request via GitHub API.
 
@@ -262,7 +387,7 @@ Automatically create a pull request via GitHub API.
 }
 ```
 
-### 8. fork_repo (Optional - Requires Token)
+### 9. fork_repo (Optional - Requires Token)
 
 Fork a repository to your account.
 
@@ -398,10 +523,27 @@ GitHub API has rate limits to prevent abuse:
 
 ## Typical Workflow
 
-1. **Find an issue to work on**:
+### Option 1: You Don't Have a Repository in Mind Yet
+
+1. **Discover popular repositories** matching your interests:
 ```json
 {
-  "mode": "global",
+  "language": "python",
+  "topics": ["machine-learning"],
+  "sort": "stars",
+  "limit": 10
+}
+```
+This shows you well-maintained projects (1000+ stars, 100+ contributors, active).
+
+2. **Choose a repository** from the results and proceed to step 3 in Option 2
+
+### Option 2: You Already Know Which Repository to Work On
+
+1. **Find an issue to work on** in that repository:
+```json
+{
+  "repo": "owner/repo",
   "skills": ["python", "testing"],
   "difficulty": "good-first-issue",
   "limit": 10
@@ -464,6 +606,62 @@ GitHub API has rate limits to prevent abuse:
   "body": "Fixes #123"
 }
 ```
+
+## Contributing to Open Source: Understanding Repository Guidelines
+
+### Why Repository Guidelines Matter
+
+Before making changes to any repository, it's **critical** to understand that project's specific contribution requirements. Different projects have different standards for:
+
+- **Code Style & Format**: Python vs JavaScript vs Go have different conventions
+- **Testing Requirements**: Some require 100% coverage, others don't have tests yet
+- **Commit Message Format**: Some enforce specific prefixes like `fix:` or `feat:`
+- **PR Review Process**: Some have multiple reviewers, others are more lenient
+- **Documentation Standards**: Some require docs for every change, others don't
+- **Community Standards**: Code of Conduct expectations vary widely
+
+### How This Server Helps
+
+This MCP server includes **built-in guidance for finding and reviewing contribution guidelines**:
+
+1. **`list_repo_metadata`** provides direct links to:
+   - CONTRIBUTING.md - Contribution process
+   - CODE_OF_CONDUCT.md - Community standards
+   - DEVELOPMENT.md - Development setup
+   - Other contributor resources
+
+2. **`pr_assistant`** emphasizes checking guidelines **before** creating a PR, with a dedicated section:
+   ```
+   ## ⚠️ IMPORTANT: Review Contribution Guidelines
+   
+   Before creating your PR, check the repository's contribution guidelines:
+   
+   1. Look for these files in the repository:
+      - CONTRIBUTING.md
+      - CODE_OF_CONDUCT.md
+      - DEVELOPMENT.md
+   
+   2. These files explain:
+      - How to format code and commit messages
+      - Testing requirements
+      - Documentation standards
+      - PR review process
+   ```
+
+### Best Practice Workflow
+
+```
+1. discover_repository() or identify repo you want to work on
+2. list_repo_metadata()  ← Review contribution guides here
+3. search_issues()       ← Find an issue to work on
+4. get_issue_details()   ← Understand the problem
+5. clone_repo()          ← Only after understanding requirements
+6. [Make your changes locally in your editor]
+7. pr_assistant()        ← Reviews guidelines again before PR
+8. create_pull_request() ← Create PR
+```
+
+**Key Principle**: Always read the contribution guidelines before modifying code. This prevents wasted time on PRs that won't be accepted due to format or style issues.
 
 ## Troubleshooting
 
