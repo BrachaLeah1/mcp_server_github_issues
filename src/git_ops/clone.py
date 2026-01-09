@@ -1,8 +1,11 @@
-"""Git clone operations using subprocess."""
+"""Git clone operations using fully async subprocess.
 
-import subprocess
-import shutil
+This version uses asyncio.create_subprocess_exec() instead of asyncio.to_thread()
+for better performance and true async I/O without blocking the thread pool.
+"""
+
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -39,6 +42,57 @@ def get_clone_url(repo: str, method: str = "https") -> str:
         return f"https://github.com/{repo}.git"
 
 
+async def run_git_command(
+    args: list[str],
+    cwd: Optional[str] = None,
+    timeout: int = 30
+) -> tuple[int, str, str]:
+    """
+    Run a git command asynchronously using asyncio subprocess.
+    
+    This is the core async function that replaces subprocess.run() calls.
+    It uses asyncio.create_subprocess_exec() for true async I/O.
+    
+    Args:
+        args: Command arguments (e.g., ["git", "status"])
+        cwd: Working directory for the command
+        timeout: Timeout in seconds
+        
+    Returns:
+        Tuple of (returncode, stdout, stderr)
+        
+    Raises:
+        asyncio.TimeoutError: If command times out
+    """
+    try:
+        # Create async subprocess
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd
+        )
+        
+        # Wait for completion with timeout
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=timeout
+        )
+        
+        return (
+            process.returncode,
+            stdout.decode('utf-8', errors='replace'),
+            stderr.decode('utf-8', errors='replace')
+        )
+        
+    except asyncio.TimeoutError:
+        # Kill the process if it times out
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+        raise
+
+
 async def get_current_branch(repo_path: Path) -> str:
     """
     Get the current branch name in a git repository.
@@ -50,19 +104,17 @@ async def get_current_branch(repo_path: Path) -> str:
         Current branch name or "unknown"
     """
     try:
-        # Use asyncio.to_thread to run blocking subprocess.run in a thread pool
-        # This allows the event loop to continue processing other requests
-        result = await asyncio.to_thread(
-            subprocess.run,
-            ["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
+        returncode, stdout, stderr = await run_git_command(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(repo_path),
             timeout=5
         )
-        if result.returncode == 0:
-            return result.stdout.strip()
+        
+        if returncode == 0:
+            return stdout.strip()
     except Exception:
         pass
+    
     return "unknown"
 
 
@@ -75,7 +127,11 @@ async def clone_repository(
     skip_validation: bool = False
 ) -> Dict[str, Any]:
     """
-    Clone a GitHub repository to a local directory.
+    Clone a GitHub repository to a local directory using async subprocess.
+    
+    This version uses asyncio.create_subprocess_exec() for true async I/O,
+    which is more efficient than asyncio.to_thread() as it doesn't consume
+    thread pool resources and provides better concurrency.
     
     Args:
         repo: Repository in "owner/repo" format
@@ -121,19 +177,16 @@ async def clone_repository(
     cmd.extend([clone_url, target_path])
     
     try:
-        # Execute git clone asynchronously using asyncio.to_thread
-        # This offloads the blocking subprocess call to a thread pool,
-        # allowing the event loop to process other requests concurrently
-        result = await asyncio.to_thread(
-            subprocess.run,
+        # Execute git clone using fully async subprocess
+        # This doesn't block the event loop or consume thread pool resources
+        returncode, stdout, stderr = await run_git_command(
             cmd,
-            capture_output=True,
-            text=True,
+            cwd=None,  # Clone operations don't need a cwd
             timeout=300  # 5 minute timeout
         )
         
-        if result.returncode != 0:
-            error_msg = result.stderr.strip() if result.stderr else result.stdout.strip()
+        if returncode != 0:
+            error_msg = stderr.strip() if stderr else stdout.strip()
             
             # Parse common git errors
             if "Repository not found" in error_msg or "could not read" in error_msg:
@@ -180,7 +233,7 @@ async def clone_repository(
             "next_steps": next_steps
         })
         
-    except subprocess.TimeoutExpired:
+    except asyncio.TimeoutError:
         return error_response(
             ErrorCode.CLONE_FAILED,
             "Clone operation timed out (exceeded 5 minutes)",
@@ -199,7 +252,7 @@ async def clone_repository(
 
 async def get_git_status(repo_path: str) -> Dict[str, Any]:
     """
-    Get git status for a repository.
+    Get git status for a repository using async subprocess.
     
     Args:
         repo_path: Path to the git repository
@@ -213,38 +266,84 @@ async def get_git_status(repo_path: str) -> Dict[str, Any]:
     try:
         path = Path(repo_path).resolve()
         
-        # Check if it's a git repository (non-blocking via asyncio.to_thread)
-        result = await asyncio.to_thread(
-            subprocess.run,
-            ["git", "-C", str(path), "rev-parse", "--git-dir"],
-            capture_output=True,
-            text=True,
+        # Check if it's a git repository
+        returncode, stdout, stderr = await run_git_command(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=str(path),
             timeout=5
         )
         
-        if result.returncode != 0:
+        if returncode != 0:
             return {"error": "Not a git repository"}
         
         # Get current branch
         branch = await get_current_branch(path)
         
-        # Get status (non-blocking via asyncio.to_thread)
-        result = await asyncio.to_thread(
-            subprocess.run,
-            ["git", "-C", str(path), "status", "--porcelain"],
-            capture_output=True,
-            text=True,
+        # Get status
+        returncode, stdout, stderr = await run_git_command(
+            ["git", "status", "--porcelain"],
+            cwd=str(path),
             timeout=5
         )
         
-        has_changes = bool(result.stdout.strip())
+        has_changes = bool(stdout.strip())
         
         return {
             "is_git_repo": True,
             "current_branch": branch,
             "has_uncommitted_changes": has_changes,
-            "status_summary": result.stdout.strip() if has_changes else "Working tree clean"
+            "status_summary": stdout.strip() if has_changes else "Working tree clean"
         }
         
+    except asyncio.TimeoutError:
+        return {"error": "Git command timed out"}
     except Exception as e:
         return {"error": str(e)}
+
+
+async def check_repo_has_uncommitted_changes(repo_path: str) -> bool:
+    """
+    Quick check if repository has uncommitted changes.
+    
+    Args:
+        repo_path: Path to the git repository
+        
+    Returns:
+        True if there are uncommitted changes, False otherwise
+    """
+    try:
+        returncode, stdout, stderr = await run_git_command(
+            ["git", "status", "--porcelain"],
+            cwd=repo_path,
+            timeout=5
+        )
+        
+        return returncode == 0 and bool(stdout.strip())
+    except Exception:
+        return False
+
+
+async def get_remote_url(repo_path: str, remote: str = "origin") -> Optional[str]:
+    """
+    Get the remote URL for a git repository.
+    
+    Args:
+        repo_path: Path to the git repository
+        remote: Remote name (default: "origin")
+        
+    Returns:
+        Remote URL or None if not found
+    """
+    try:
+        returncode, stdout, stderr = await run_git_command(
+            ["git", "remote", "get-url", remote],
+            cwd=repo_path,
+            timeout=5
+        )
+        
+        if returncode == 0:
+            return stdout.strip()
+    except Exception:
+        pass
+    
+    return None
