@@ -745,11 +745,14 @@ mcp_github_issue_shepherd/
 │   │   └── api.py          # Automated PR/fork operations
 │   └── utils/
 │       ├── errors.py       # Error handling
+│       ├── logging_config.py  # Logging configuration for the MCP server
 │       ├── redact.py       # Token redaction
 │       └── detect_project.py  # Project type detection
 └── tests/
     ├── test_query_builder.py
+    ├── test_mcp_tools.py
     ├── test_fs_validate.py
+    ├── test_rate_limiting.py
     └── test_redact.py
 ```
 
